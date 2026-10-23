@@ -1,0 +1,118 @@
+strictsh — a constrained POSIX sh profile and diagnostic oracle for coding agents
+
+Install:
+  curl -fsSL https://raw.githubusercontent.com/ilvar/strictsh/main/install.sh -o /tmp/strictsh-install.sh
+  sh /tmp/strictsh-install.sh
+  Installs the latest release to ~/.local/bin. Linux/macOS x64/ARM64 use prebuilt
+  binaries with SHA-256 verification. Other Unix hosts/architectures build the
+  same release tag; rustup and a native C compiler are required. The script
+  installs Rust 1.97.1 through rustup for source builds.
+  STRICTSH_VERSION=0.1.0 (or v0.1.0) pins the version for downloads and builds;
+  unset, empty or latest selects the latest release. Pinned versions skip the
+  latest-release lookup. Downloads require a published release; pinned source
+  builds only require the selected Git tag.
+  STRICTSH_INSTALL_DIR changes the destination; STRICTSH_BUILD_FROM_SOURCE=1
+  forces a build. Download/checksum failures never silently switch to a build.
+  ShellCheck is required separately on PATH for linting.
+
+Install from the development branch instead:
+  cargo install --git https://github.com/ilvar/strictsh --locked
+  Install ShellCheck 0.10.0 (recommended) and put shellcheck on PATH.
+
+Commands:
+  strictsh check [PATH]     Check a script or recursively check a project.
+  strictsh [PATH]           Alias for check; defaults to current directory.
+  strictsh new NAME         Create a standalone POSIX sh project; never overwrite.
+  strictsh --help           Print this embedded manual (-h/help also work).
+  strictsh --version        Print the binary version.
+
+Agent workflow: check → repair → re-check. Read every diagnostic; use explicit
+failure handling. Do not invent fixes, disable checks, or push unvalidated code.
+The checker NEVER executes the input scripts. ShellCheck is mandatory, with
+--norc --shell=sh --format=json1 --enable=all --severity=style. SHELLCHECK_OPTS
+is removed from its environment. Inline ShellCheck directives are forbidden.
+External source following is disabled; sourcing is outside this profile.
+
+Output contract (schema v1): one JSON object for successful checks and new.
+Fields: ok, error_count, warning_count, diagnostics. Each diagnostic contains
+level, source (strictsh/shellcheck), code, message, at, fixes. at contains file,
+line, col, end_line, end_col, snippet; positions are 1-based character columns,
+end positions exclusive. Paths are relative to the checked directory, or the
+parent of a checked file, using '/'. Ordering: file, line, col, code, message.
+ALL ShellCheck severities are promoted to errors; warning_count is always zero.
+fixes is empty: this release checks only and never modifies existing scripts.
+Operational/invocation failures print concise stderr and no stdout. Help and
+version are plain-text stdout exceptions. Exit 0: clean; 1: diagnostics;
+2: invocation, discovery, parser-engine or ShellCheck operational failure.
+
+Discovery: .sh files and extensionless files with sh shebangs. Explicit
+file paths are checked regardless of extension. Skip .git, target, node_modules,
+vendor, .venv and nested symlinks. Explicit paths are canonicalized. Unreadable
+files/directories fail the operation. No scripts is an operational error.
+
+Strict rules:
+  strictsh::sh_shebang          #!/bin/sh, /usr/bin/sh or /usr/bin/env sh.
+  strictsh::required_options      First executable statement: set -u.
+  strictsh::fixed_options         No other set/shopt; no set -e or option changes.
+  strictsh::explicit_status       Check fallible commands, assignments and tests.
+  strictsh::no_dynamic_code       No eval, source, '.', trap, inline shell code or dispatch wrappers.
+  strictsh::no_dynamic_command    Command name must be a literal executable name.
+  strictsh::no_indirection        No ${!name} or nameref (-n) declarations.
+  strictsh::no_backticks          Use $(...) command substitution.
+  strictsh::no_process_substitution  No <(...) or >(...); their exit status is hidden.
+  strictsh::no_pipeline            No pipelines: upstream failures are hidden in portable sh.
+  strictsh::posix_syntax           No Bash arrays, [[ ]], declarations or function keyword.
+  strictsh::no_background         No asynchronous '&' jobs.
+  strictsh::no_masked_status      One substitution per standalone checked assignment.
+  strictsh::no_star_args          Use "${@}", never $* or ${*}.
+  strictsh::prefer_printf         printf with a literal format instead of echo.
+  strictsh::no_suppression        No inline ShellCheck directives.
+  strictsh::syntax_error          Invalid/unsupported shell syntax.
+ShellCheck diagnostics use shellcheck::SC<number>.
+
+Status handling:
+  if output=$(tool "${arg}"); then
+      printf '%s\n' "${output}"
+  else
+      printf 'tool failed\n' >&2 || exit 1
+      exit 1
+  fi
+  tool "${arg}" || exit 1
+
+Use if/elif/while/until or an explicit || handler. In &&/|| chains each non-final
+operand consumes a status; the final operand still needs a handler or must be
+one of the exempt builtins. Only the final command of an if/elif/loop condition is
+tested. Groups/functions do not magically guard the commands inside them.
+Pipelines are forbidden, even in conditions: portable sh cannot expose upstream failures.
+Use individually checked commands with temporary files instead.
+Command substitutions propagate status only through standalone assignments;
+declaration-with-substitution and substitution inside command arguments mask it.
+Exempt builtins: printf, :, true, false, return, exit, break, continue, prologue
+set. This syntactic policy assumes normal POSIX sh builtins; it is NOT a proof that
+every failure is handled (printf can fail, a handler can be semantically wrong,
+and functions may shadow builtins). Check redirections explicitly too.
+
+Keep POSIX sh as small standalone glue. No source libraries or string traps in this
+initial profile. Move complex work into Rust using strictrs. The parser is
+tree-sitter-bash, not a custom shell parser; ShellCheck adds semantic analysis.
+Literal `sh script.sh` calls are allowed; dynamic script paths, inline-code
+modes and other shell interpreters are forbidden.
+This tool is a linter, not a sandbox or security boundary.
+
+Generated project: main.sh, tests/smoke.sh, Makefile, README.md, AGENTS.md.
+Run POSIX sh scripts with sh main.sh; run make check and make test. Generation
+validates NAME, writes through a staging directory and refuses existing paths.
+No fix command or install-skills command is implemented in v0.1.
+
+Development (Rust 1.97.1, pinned dependencies and committed Cargo.lock):
+  cargo fmt --check
+  cargo clippy --all-targets --all-features --locked -- -D warnings
+  cargo test --all-targets --all-features --locked
+  strictrs check .
+  cargo run --locked -- check templates
+  cargo run --locked -- check install.sh
+Tests require ShellCheck on PATH. Preserve minimized property-test regressions.
+CI builds native Linux and macOS x64/ARM64 binaries, with checksums. Passing
+main builds publish v<manifest version> only when that release does not exist.
+Update Cargo.toml and Cargo.lock together for a new release; never overwrite a
+published version. Pull requests upload artifacts but never publish releases.
